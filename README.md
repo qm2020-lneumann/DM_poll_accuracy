@@ -1,5 +1,5 @@
 # DM_poll_accuracy
-Data, code and plots for term paper
+Data, code, graphs and tables for term paper
 
 Please download the data and code. Make sure to store it in one folder. 
 
