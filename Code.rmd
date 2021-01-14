@@ -1,0 +1,813 @@
+# DM termpaper accuracy U.S. election polls
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# packages needed
+p_needed <-
+  c("viridis", "stargazer", "foreign", "readxl", "readr", "dplyr", "strptime", "tidyr", "ggplot2", "ggthemes", "gridExtra")
+
+# packages installed on your computer
+packages <- rownames(installed.packages())
+
+p_to_install <- p_needed[!(p_needed %in% packages)]
+
+# install if not on computer
+if (length(p_to_install) > 0) {
+  install.packages(p_to_install)
+}
+
+sapply(p_needed, require, character.only = TRUE)
+
+# This is an option for stargazer tables
+stargazer_opt <- ifelse(knitr::is_latex_output(), "latex", "html")
+```
+
+# Load datasets
+```{r load datasets, warning = FALSE, message = FALSE}
+# 538 polls 2020 (https://projects.fivethirtyeight.com/2020-election-forecast/)
+polls2020 <- read_csv("raw_data/president_polls_2020.csv") 
+#head(polls2020)
+
+# 538 polls 2016 (https://projects.fivethirtyeight.com/2016-election-forecast/) 
+polls2016 <- read_csv("raw_data/president_general_polls_2016.csv") 
+#head(polls2016)
+
+# 538 pollster info (https://github.com/fivethirtyeight/data/tree/master/pollster-ratings) including additional coded information
+pollster2020 <- read_excel("raw_data/2020_pollster-stats-full_coded.xlsx")
+#head(pollster2020)
+
+pollster2016 <- read_excel("raw_data/2016_pollster-stats-full_coded.xlsx")
+#head(pollster2016)
+
+# election results (2016 + 2020 - state; https://github.com/MEDSL/election_night2020/tree/main/results)
+results_16_20 <- read_excel("raw_data/timestamp_results_nyt_call.xlsx")
+#head(results_16_20)
+
+# covid data (https://github.com/MEDSL/election_night2020/tree/main/context/covid/raw)
+covid_state <- read_rds("raw_data/covid_state_ts.rds")
+#head(covid)
+
+```
+
+# Prepare and merge datasets
+## Election results dataset
+```{r election election results}
+
+# cleaning and filtering
+results_16_20$timestamp <- as.numeric(results_16_20$timestamp) # transform to character
+
+max_results <- results_16_20 %>%
+                  group_by(state) %>%
+                  filter(timestamp == max(timestamp, na.rm = TRUE)) # filter to newest (max) timestamp
+
+# head(max_results)
+
+results_cleaned <- max_results[c("votes", "trumpd", "bidenj", "race_rating", "state_name", "state_id", "electoral_votes", "absentee_votes", "reporting_display", "reporting_value", "leader_margin_name_display", "leader_party_id", "votes2016", "margin2016", "clinton2016", "trump2016")] # keep only these variables
+
+# add national level results, taken from: https://uselectionatlas.org/RESULTS/ 
+result <- rbind(results_cleaned, c(155509279, 0.468, 0.512, "NA", "U.S.", "U.S.", 538, "NA", "NA", 0, "Biden + 4", "democrat", 128838830, -2.1, 65853677, 62985153)) # 2020
+
+# add percentages for 2016 election (Clinton + Trump)
+table(result$state_id)
+result$trump2016p <- c(0.512, 0.62, 0.605, 0.48, 0.314, 0.432, 0.409, 0.04, 0.417, 0.486, 0.503, 0.3, 0.511, 0.592, 0.383, 0.564, 0.56, 0.625, 0.58, 0.328, 0.339, 0.448, 0.472, 0.449, 0.563, 0.578, 0.556, 0.498, 0.629, 0.587, 0.464, 0.41, 0.4, 0.455, 0.365, 0.513, 0.653, 0.39, 0.481, 0.389, 0.549, 0.615, 0.607, 0.52, 0.45, 0.444, 0.302, 0.368, 0.472, 0.678, 0.681, 0.459) 
+
+result$clinton2016p <- c(0.365, 0.343, 0.336, 0.445, 0.614, 0.481, 0.545, 0.908, 0.53, 0.474, 0.452, 0.622, 0.417, 0.274, 0.552, 0.374, 0.356, 0.326, 0.384, 0.6, 0.603, 0.478, 0.47, 0.464, 0.378, 0.4, 0.354, 0.461, 0.272, 0.337, 0.468, 0.549, 0.482, 0.479, 0.59, 0.432, 0.289, 0.5, 0.474, 0.544, 0.406, 0.317, 0.347, 0.431, 0.271, 0.497, 0.566, 0.525, 0.464, 0.261, 0.218, 0.48)
+
+# head(result)
+
+result$winner2020_biden <- ifelse(result$bidenj>result$trumpd, 
+                            1, 
+                            ifelse(is.na(result$bidenj), NA, 0)) # winner is Biden
+
+result$winner2016_clinton <- ifelse(result$clinton2016p>result$trump2016p, 
+                            1, 
+                            ifelse(is.na(result$clinton2016p), NA, 0)) # winner is Clinton
+
+result[52, 20] <- 0 # fix the popular vote for 2016 ^^ 
+  
+# table(result$winner2016_trump, result$state_name) 
+# table(result$winner2020_trump, result$state_name) 
+
+# add electoral votes (states + national), taken from: https://uselectionatlas.org/RESULTS/ 
+result$electoral_votes2020_b <- c(0, 0, 6, 11, 55, 9, 7, 3, 3, 0, 16, 4, 0, 0, 20, 0, 0, 0, 0, 11, 10, 3, 16, 10, 0, 0, 0, 0, 0, 1, 4, 14, 5, 6, 29, 0, 0, 7, 20, 4, 0, 0, 0, 0, 0, 13, 3, 12, 10, 0, 0, 306)
+result$electoral_votes2020_t <- c(3, 9, 0, 0, 0, 0, 0, 0, 3, 29, 0, 0, 6, 4, 0, 11, 6, 8, 8, 0, 0, 1, 0, 0, 10, 6, 3, 15, 3, 4, 0, 0, 0, 0, 0, 18, 7, 0, 0, 0, 9, 3, 11, 38, 6, 0, 0, 0, 0, 5, 3, 232)
+
+result$electoral_votes2016_c <- c(0, 0, 0, 0, 55, 9, 7, 3, 3, 0, 0, 3, 0, 0, 20, 0, 0, 0, 0, 11, 10, 3, 0, 10, 0, 0, 0, 0 , 0, 0, 4, 14, 5, 6, 29, 0, 0, 7, 0, 4, 0, 0, 0, 0, 0, 13, 3, 8, 0, 0, 0, 227)
+result$electoral_votes2016_t <- c(3, 9, 6, 11, 0, 0, 0, 0, 0, 29, 16, 0, 6, 4, 0, 11, 6, 8, 8, 0, 0, 1, 16, 0, 10, 6, 3, 15, 3, 5, 0, 0, 0, 0, 0, 18, 7, 0, 20, 0, 9, 3, 11, 38, 6, 0, 0, 0, 0, 5, 3, 304)
+
+# head(result)
+
+```
+
+## 2020 polls
+```{r 2020 polls}
+
+trump <- polls2020[polls2020$candidate_id==13254,] # subset to Trump
+trump2 <- trump[-c(3, 6:33)]
+
+biden <- polls2020[polls2020$candidate_id==13256,] # subset to Biden
+
+polls_2020_combined_test <- trump2 %>% # generate new dataset
+  left_join(biden, by = c("poll_id", "state", "pollster_id", "question_id")) # merge subsets (Trump to Biden)
+
+polls_2020_combined <- polls_2020_combined_test[-c(1)]
+
+# head(polls_2020_combined)
+polls_2020_combined2 <- polls_2020_combined[c("poll_id", "state", "pollster_id", "pollster", "sponsors", "pollster_rating_id", "fte_grade", "sample_size", "population", "population_full", "methodology", "start_date", "end_date", "nationwide_batch", "answer.x", "candidate_id.x", "candidate_party.x", "pct.x", "answer.y", "candidate_id.y", "candidate_party.y", "pct.y")] # keep these variables
+
+# head(polls_2020_combined2)
+```
+
+## 2020 pollsters 
+```{r 2020 pollsters}
+
+# head(pollster2020)
+
+pollster_2020_cleaned <- pollster2020[c("Pollster", "Pollster Rating ID", "Nr of Polls", "NCPP / AAPOR / Roper",	
+"Live Caller With Cellphones", "Banned by 538", "Races Called Correctly", "Herding Penalty", "English", "Spanish", "Weight by age", "Weight by gender", "Weight by education", "Weight by race", "Weight by partisanship/party registration", "Weight by region/district", "Weight by income", "Weight by other")] # keep these variables
+# head(pollster_2020_cleaned)
+
+```
+
+## merge 2020 polls and pollsters
+```{r merge 2020 polls and pollsters}
+
+colnames(pollster_2020_cleaned)[colnames(pollster_2020_cleaned)=="Pollster Rating ID"]<-"pollster_rating_id" # make sure that variable names for merging match
+colnames(pollster_2020_cleaned)[colnames(pollster_2020_cleaned)=="Pollster"]<-"pollster"
+
+pp2020 <- polls_2020_combined2 %>% # generate new, merged dataset 
+  left_join(pollster_2020_cleaned, by = c("pollster_rating_id", "pollster"))
+
+# head(pp2020) 
+# nrow(pp2020) # 6020
+
+pp2020 <- pp2020[!is.na(pp2020$pct.x), ] # delete observations for which Biden is not polled
+pp2020 <- pp2020[!is.na(pp2020$pct.y), ] # delete observations for which Trump is not polled
+
+```
+
+## 2016 polls
+```{r polls 2016}
+p2016 <- polls2016[polls2016$type=="polls-only",] # polls without adjustment for other variables
+
+# head(p2016)
+
+polls_2016_cleaned <- p2016[c("state", "startdate", "enddate", "pollster", "grade", "samplesize", "population", "rawpoll_clinton", "rawpoll_trump", "poll_id")] # keep these variables
+
+# head(polls_2016_cleaned)
+```
+
+## 2016 pollsters
+```{r pollsters 2016}
+# head(pollster2016) 
+
+pollster_2016_cleaned <- pollster2016[c("Pollster", "Nr of Polls", "NCPP / AAPOR / Roper",	"Live Caller With Cellphones", "Internet","Banned by 538", "Races Called Correctly", "English", "Spanish", "Weight by age", "Weight by gender", "Weight by education", "Weight by race", "Weight by partisanship/party registration", "Weight by region/district", "Weight by income", "Weight by other")] # keep these variables
+
+# head(pollster_2016_cleaned)
+```
+
+## merge 2016 polls and pollsters
+```{r merge 2016 polls and pollsters}
+colnames(pollster_2016_cleaned)[colnames(pollster_2016_cleaned)=="Pollster"]<-"pollster" # make sure that variable names for merging match
+
+pp2016 <- pollster_2016_cleaned %>% # generate new, merged dataset
+  left_join(polls_2016_cleaned, by = c("pollster"))
+
+# head(pp2016)
+# nrow(pp2016) # 4441 cases
+
+pp2016 <- pp2016[!is.na(pp2016$rawpoll_clinton), ] # delete observations for which Clinton is not polled
+pp2016 <- pp2016[!is.na(pp2016$rawpoll_trump), ] # delete observations for which Trump is not polled
+# nrow(pp2016) # 4208 cases
+```
+
+## merge election results with 2016 dataset
+```{r merge election results with 2016 dataset}
+# head(pp2016)
+# head(result)
+final_2016 <- pp2016 %>% # generate new, merged dataset
+  left_join(result, by = c("state"="state_name"))
+
+# head(final_2016)
+
+table(final_2016$clinton2016p, useNA = "ifany") # there are missings -> Maine and Nebraska has district polls but we have only state level results!
+table(result$state_name)
+table(pp2016$state)
+
+# nrow(final_2016) # 4208
+final_2016 <- final_2016[!is.na(final_2016$state_id), ] # Maine and Nebraska districts omitted
+# nrow(final_2016) # 4179 
+
+```
+
+## merge election results with 2020 dataset
+```{r merge election results with 2020 dataset}
+# head(pp2020)
+# head(result)
+
+final_2020 <- pp2020 %>% # generate new, merged dataset
+  left_join(result, by = c("state"="state_name"))
+
+# head(final_2020)
+
+table(final_2020$bidenj, useNA = "ifany") # there are missings -> Maine and Nebraska has district polls but we have only state level results!
+table(result$state_name)
+table(pp2020$state)
+# nrow(final_2020) # 6020
+final_2020 <- final_2020[!is.na(final_2020$state_id), ] # Maine and Nebraska districts omitted
+# nrow(final_2020) # 5700
+
+# delete 2016 cases in final_2020 and delete 2020 cases in final_2016?
+final_2020$trumpd <- as.numeric(final_2020$trumpd)
+final_2020$bidenj <- as.numeric(final_2020$bidenj)
+summary(final_2020$trumpd)
+summary(final_2020$bidenj) 
+```
+
+## recode variables (methodology, ...)
+```{r recode methodology}
+
+#table(final_2020$methodology) 
+
+# recoding the methodology to phone, online, mix, other (pure categories)
+final_2020$meth_cat <- as.numeric(as.factor(final_2020$methodology)) #final_2020$methodology 
+
+final_2020$meth_cat[final_2020$meth_cat == 1] <- "phone"
+final_2020$meth_cat[final_2020$meth_cat == 2] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 3] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 4] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 5] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 6] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 7] <- "phone"
+final_2020$meth_cat[final_2020$meth_cat == 8] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 9] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 10] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 11] <- "other"
+final_2020$meth_cat[final_2020$meth_cat == 12] <- "online"
+final_2020$meth_cat[final_2020$meth_cat == 13] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 14] <- "mix"
+final_2020$meth_cat[final_2020$meth_cat == 15] <- "other"
+
+
+table(final_2020$meth_cat)
+
+```
+# coding grade and live caller for 2020
+```{r grade variable}
+# 2016 grade 
+final_2016$grade_new <- final_2016$grade
+
+final_2016$grade_new[final_2016$grade_new == "A-"] <- "A"
+final_2016$grade_new[final_2016$grade_new == "A+"] <- "A"
+final_2016$grade_new[final_2016$grade_new == "B-"] <- "B"
+final_2016$grade_new[final_2016$grade_new == "B+"] <- "B"
+final_2016$grade_new[final_2016$grade_new == "C-"] <- "C"
+final_2016$grade_new[final_2016$grade_new == "C+"] <- "C"
+
+# table(final_2016$grade_new, useNA = "ifany")
+
+# 2020 grade 
+final_2020$fte_grade_new <- final_2020$fte_grade
+final_2020$fte_grade_new[final_2020$fte_grade_new == "A+"] <- "A"
+final_2020$fte_grade_new[final_2020$fte_grade_new == "A-"] <- "A"
+final_2020$fte_grade_new[final_2020$fte_grade_new == "A/B"] <- "B" # more conservative coding
+final_2020$fte_grade_new[final_2020$fte_grade_new == "B-"] <- "B"
+final_2020$fte_grade_new[final_2020$fte_grade_new == "B+"] <- "B"
+final_2020$fte_grade_new[final_2020$fte_grade_new == "B/C"] <- "C"
+final_2020$fte_grade_new[final_2020$fte_grade_new == "C+"] <- "C"
+final_2020$fte_grade_new[final_2020$fte_grade_new == "C-"] <- "C"
+final_2020$fte_grade_new[final_2020$fte_grade_new == "C/D"] <- "D"
+final_2020$fte_grade_new[final_2020$fte_grade_new == "D-"] <- "D"
+
+# table(final_2020$fte_grade_new, useNA = "ifany")
+
+# alternative recoding 2020 grade
+final_2020$fte_grade_newalt <- final_2020$fte_grade
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "A+"] <- "A"
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "A-"] <- "A"
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "A/B"] <- "A" # more conservative coding
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "B-"] <- "B"
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "B+"] <- "B"
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "B/C"] <- "B"
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "C+"] <- "C"
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "C-"] <- "C"
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "C/D"] <- "C"
+final_2020$fte_grade_newalt[final_2020$fte_grade_newalt == "D-"] <- "D"
+
+# table(final_2020$fte_grade_newalt, useNA = "ifany")
+
+# live caller
+final_2020$cellphones <- final_2020$`Live Caller With Cellphones`
+final_2020$cellphones[final_2020$cellphones == "yes*"] <- "yes"
+final_2020$cellphones[final_2020$cellphones == "partial"] <- "yes"
+
+# table(final_2020$cellphones, useNA = "ifany")
+
+``` 
+
+
+## prepare winner for polls
+```{r winner-variable for polls}
+
+# 2016
+final_2016$clinton_new <- final_2016$clinton2016p * 100 # multiply to match rawpoll numbers
+final_2016$trump_new <- final_2016$trump2016p * 100
+
+
+final_2016$winner2016poll_clinton <- ifelse(final_2016$rawpoll_clinton>final_2016$rawpoll_trump, 
+                            1, 
+                            ifelse(is.na(final_2016$rawpoll_clinton), NA, 0)) # 1 if Clinton is winner 
+
+# table(final_2016$winner2016poll_clinton, useNA = "ifany")
+
+# 2020
+
+final_2020$trump_new <- final_2020$trumpd * 100 # multiply to match rawpoll numbers
+final_2020$biden_new <- final_2020$bidenj * 100
+
+final_2020$winner2020poll_biden <- ifelse(final_2020$pct.y>final_2020$pct.x, 
+                            1, 
+                            ifelse(is.na(final_2020$pct.y), NA, 0)) # 1 if Biden is winner (x is Trump, y is Biden)
+
+# table(final_2020$winner2020poll_biden, useNA = "ifany") 
+```
+
+# Code accuracy variables
+## accuracy as right winner
+```{r accuracy - winner}
+
+# 2016
+# table(final_2016$winner2016_clinton, useNA = "ifany")
+#table(final_2016$winner2016poll_clinton, useNA = "ifany")
+
+final_2016$accuracy_poll <- ifelse(final_2016$winner2016_clinton == final_2016$winner2016poll_clinton, 
+                            1, 
+                            ifelse(is.na(final_2016$winner2016_clinton), NA, 0)) # 1 if poll predicts correctly (winner = winner, loser = loser) 
+
+table(final_2016$accuracy_poll, useNA = "ifany")
+# most polls predicted winner/loser correctly
+
+# 2020
+# table(final_2020$winner2020_biden, useNA = "ifany")
+# table(final_2020$winner2020poll_biden, useNA = "ifany")
+
+final_2020$accuracy_poll <- ifelse(final_2020$winner2020_biden == final_2020$winner2020poll_biden, 
+                            1, 
+                            ifelse(is.na(final_2020$winner2020_biden), NA, 0)) # 1 if poll predicts correctly (winner = winner, loser = loser) 
+
+# table(final_2020$accuracy_poll, useNA = "ifany")
+# more polls than 2016 predict winner/loser correctly 
+# table(final_2020$accuracy_poll, final_2020$state_id, useNA = "ifany")
+# incorrect predictions mostly in AZ, FL, GA, IA, MI, NC, OH, TX -> swing states
+
+```
+
+## accuracy AAPOR 
+```{r accuracy AAPOR}
+# 2016
+final_2016$margin_poll2016 <- final_2016$rawpoll_clinton - final_2016$rawpoll_trump
+# extreme values of -46 and + 86 are legitimate
+
+final_2016$margin_result2016 <- final_2016$clinton_new - final_2016$trump_new
+
+# table(final_2016$margin_poll2016, useNA = "ifany")
+# table(final_2016$margin_result2016, useNA = "ifany")
+
+final_2016$accuracy_aapor <- final_2016$margin_poll2016 - final_2016$margin_result2016
+
+# table(final_2016$accuracy_aapor, useNA = "ifany")
+range(final_2016$accuracy_aapor)
+
+# 2020
+final_2020$margin_poll2020 <- final_2020$pct.y - final_2020$pct.x  # Biden (y) - Trump (x)
+
+final_2020$margin_result2020 <- final_2020$biden_new - final_2020$trump_new
+
+final_2020$accuracy_aapor <- final_2020$margin_poll2020 - final_2020$margin_result2020
+
+# table(final_2020$accuracy_aapor, useNA = "ifany")
+range(final_2020$accuracy_aapor) 
+
+```
+
+## accuracy AAPOR absolute
+```{r accuracy AAPOR absolute}
+# 2016
+final_2016$accuracy_aapor_abs <- abs(final_2016$margin_poll2016 - final_2016$margin_result2016)
+
+range(final_2016$accuracy_aapor_abs)
+
+# 2020
+final_2020$accuracy_aapor_abs <- abs(final_2020$margin_poll2020 - final_2020$margin_result2020)
+
+range(final_2020$accuracy_aapor_abs)
+```
+
+## format time
+```{r format time}
+# 2016
+#table(final_2016$startdate)
+class(final_2016$startdate)
+final_2016$startdate2 <- as.Date(as.character(final_2016$startdate), "%m/%d/%Y")
+#table(final_2016$startdate2)
+class(final_2016$startdate2)
+
+final_2016 <- final_2016[final_2016$startdate2 > as.Date("2015-12-31"),] # subset data to election year
+
+# 2020
+#table(final_2020$start_date)
+final_2020$start_date2 <- as.Date(as.character(final_2020$start_date), "%m/%d/%y")
+class(final_2020$start_date2)
+#table(final_2020$start_date2, useNA = "ifany")
+final_2020$start_date3 <- strftime(final_2020$start_date2, format = "%V")
+#table(final_2020$start_date3, useNA = "ifany")
+final_2020$start_date3 <- as.numeric(final_2020$start_date3)
+
+final_2020 <- final_2020[final_2020$start_date2 > as.Date("2019-12-31"),] # subset data to election year
+
+```
+
+## merge Covid data
+```{r Covid}
+covid_state <- covid_state[c(2,4:11)] # delete unnecessary variables
+
+final_2020c <- final_2020 %>% # generate new, merged dataset
+  left_join(covid_state, by = c("start_date3"="week", "state_id" ="state_po"))
+
+#table(final_2020c$state)
+#range(final_2020c$cases_per100k, na.rm = T) # 0 -730
+```
+
+```{r save dataset}
+save(final_2016, file = "merged_data/final_2016.RData") 
+
+save(final_2020c, file = "merged_data/final_2020.RData")
+
+```
+
+# Descriptive statistics
+## Get overview of dataset
+### 2016
+
+```{r descriptive statistics 2016}
+nrow(final_2016) # number of observations: 4124
+
+length(unique(final_2016$pollster)) # 195 pollsters
+
+table(final_2016$grade_new, useNA = "ifany") # most pollster A and B, even with conservative coding
+
+table(final_2016$Internet, useNA = "ifany") # majority includes Internet
+table(final_2016$`Live Caller With Cellphones`, useNA = "ifany") # minority uses cellphone
+
+table(final_2016$population) # most include likely voters 
+
+table(final_2016$accuracy_poll) # more than half of polls predict correctly (winner and loser)
+
+summary(final_2016$accuracy_aapor) # mean is 4, range -80 to 42
+summary(final_2016$accuracy_aapor_abs) # mean is 6.7, range 0 to 80 (by definition always positive)
+
+summary(final_2016$samplesize) 
+
+table(final_2016$`Weight by education`, final_2016$grade_new, useNA = "ifany")
+
+table(final_2016$`Weight by education`, final_2016$state_id, useNA = "ifany")
+
+
+aggregate(x = final_2016$samplesize,                
+          by = list(final_2016$grade_new),              
+          FUN = mean) 
+```
+
+### 2020
+
+```{r descriptive statistics 2020}
+nrow(final_2020c) # number of observations: 5700
+
+length(unique(final_2020c$pollster)) # 212 pollsters
+
+table(final_2020c$fte_grade_new, useNA = "ifany") # majority of pollsters received D rating
+
+table(final_2020c$meth_cat, useNA = "ifany") # majority includes Internet (and some phone)
+
+table(final_2020c$cellphones, useNA = "ifany") # minority uses cellphone
+
+table(final_2020c$population) # most include likely voters 
+
+table(final_2020c$accuracy_poll, useNA = "ifany") # a majority of polls predict correctly (winner and loser)
+
+table(final_2020c$accuracy_poll, final_2020c$state, useNA = "ifany")
+
+summary(final_2020c$accuracy_aapor) # mean is 5, range -21 to 25
+summary(final_2020c$accuracy_aapor_abs) # mean is 5.6, range 0 to 25 (by definition always positive)
+
+# sample size
+summary(final_2020c$sample_size) 
+
+table(final_2020c$`Weight by education`, final_2020c$fte_grade_new, useNA = "ifany")
+
+table(final_2020c$`Weight by education`, final_2020c$state_id, useNA = "ifany")
+
+plot(
+  density(final_2020c$accuracy_aapor, na.rm=T))
+plot(
+  density(final_2020c$accuracy_aapor_abs, na.rm=T))
+
+table(final_2016$state_id)
+
+summary(final_2020c$accuracy_aapor_abs)
+
+table(final_2020c$meth_cat, final_2020c$fte_grade_new, useNA = "ifany")
+table(final_2020c$`Weight by education`, final_2020c$fte_grade_new, useNA = "ifany")
+
+aggregate(x = final_2020c$sample_size,                
+          by = list(final_2020c$fte_grade_new),              
+          FUN = mean) # largest average sample size for D-rated pollsters
+```
+
+# Plots
+## prepare plots 
+```{r prepare plots accuracy}
+# 2016
+
+swing2016 <- subset(final_2016, state_id == "AZ" | state_id == "CO" | state_id == "FL" | state_id == "GA" | state_id == "IA" | state_id == "ME" | state_id == "MI" | state_id == "MN" | state_id == "NC" | state_id == "NH" | state_id == "NV" | state_id == "OH" | state_id == "PA" | state_id == "VA" | state_id == "TX" | state_id == "WI") # based on 'toss-up' and 'leaning' rating of NYT election results and FTE
+
+red2016 <- subset(final_2016, state_id == "AL" | state_id == "AR" | state_id == "ID" | state_id == "KY" | state_id == "LA" | state_id == "MS" | state_id == "NE" | state_id == "ND" | state_id == "OK" | state_id == "SD" | state_id == "TN" | state_id == "WV" | state_id == "WY") # based on solid-rep rating of NYT election results
+
+
+blue2016 <- subset(final_2016, state_id == "CA" | state_id == "HI" | state_id == "DE" | state_id =="DC" | state_id == "CT" | state_id =="MD" | state_id =="MA" | state_id =="IL" | state_id =="RI" | state_id == "OR" | state_id =="NY" | state_id =="NM" | state_id == "NJ" | state_id == "WA" | state_id =="VT") # based on solid-dem rating of NYT election results
+
+national2016 <- subset(final_2016, state_id == "U.S.")
+
+
+# 2020
+swing2020 <- subset(final_2020c, state_id == "AZ" | state_id == "CO" | state_id == "FL" | state_id == "GA" | state_id == "IA" | state_id == "ME" | state_id == "MI" | state_id == "MN" | state_id == "NC" | state_id == "NH" | state_id == "NV" | state_id == "OH" | state_id == "PA" | state_id == "VA" | state_id == "TX" | state_id == "WI") # based on 'toss-up' and 'leaning' rating of NYT election results and FTE
+
+red2020 <-  subset(final_2020c, state_id == "AL" | state_id == "AR" | state_id == "ID" | state_id == "KY" | state_id == "LA" | state_id == "MS" | state_id == "NE" | state_id == "ND" | state_id == "OK" | state_id == "SD" | state_id == "TN" | state_id == "WV" | state_id == "WY") # based on solid-rep rating of NYT election results
+
+
+blue2020 <- subset(final_2020c, state_id == "CA" | state_id == "HI" | state_id == "DE" | state_id =="DC" | state_id == "CT" | state_id =="MD" | state_id =="MA" | state_id =="IL" | state_id =="RI" | state_id == "OR" | state_id =="NY" | state_id =="NM" | state_id == "NJ" | state_id == "WA" | state_id =="VT") # based on solid-dem rating of NYT election results
+
+national2020 <- subset(final_2020c, state_id == "U.S.")
+
+```
+
+## plots accuracy
+```{r plots accuracy, warning = FALSE, message = FALSE}
+# barplot mean accuracy
+bar_accuracy <- cbind(c(mean(final_2016$accuracy_aapor_abs), mean(national2016$accuracy_aapor_abs), mean(red2016$accuracy_aapor_abs), mean(blue2016$accuracy_aapor_abs), mean(swing2016$accuracy_aapor_abs)),
+            c(mean(final_2020c$accuracy_aapor_abs), mean(national2020$accuracy_aapor_abs), mean(red2020$accuracy_aapor_abs), mean(blue2020$accuracy_aapor_abs), mean(swing2020$accuracy_aapor_abs))) # take means for dataset and subsets
+
+png(file="tables_figures_and_graphs/barplot_accuracy.png", width=600, height=350) 
+x <- barplot(bar_accuracy, 
+  beside=T,                                      
+  names.arg=c('2016 U.S. presidential election','2020 U.S. presidential election'),  # Säulengruppen beschriften
+  col=c('darkorange','darkseagreen','brown2','cornflowerblue', 'mediumpurple'),  
+  ylim=c(0, 16),                               
+  xpd=FALSE,                                   
+  main = "Poll accuracy by election",
+  xlab = "",
+  ylab = "Absolute error on poll margin"
+)
+par(cex = 1) # sets font size of numbers
+y<-as.matrix(bar_accuracy)
+text(x, y+2, labels=as.character(round(y,2)))
+legend("topright",        # Add legend to plot
+       legend = c('Overall','National','Republican','Democratic', 'Swing'),
+       col = c('darkorange','darkseagreen','brown2','cornflowerblue', 'mediumpurple'),
+       pch = 16,
+       cex = 1)
+dev.off()
+
+# swing states
+s2016 <- swing2016 %>% group_by(state_id) %>% summarise(means = mean(accuracy_aapor_abs)) %>% ggplot(aes(x = state_id, y = means, fill = state_id)) +
+    geom_bar(stat = "identity", fill = "#999999", color = "black") +
+    theme_classic() +
+    labs(
+        x = "",
+        y = "Absolute error on poll margin",
+       stat="identity",
+        title = paste(
+            "Absolute poll accuracy in swing states in 2016"
+        )) +
+    geom_text(aes(label=round(means, 2)), position=position_dodge(width=0.9), vjust=-0.25) +
+  scale_y_continuous(limits = c(0, 9)) 
+   # png('tables_figures_and_graphs/accuracy_swing2016.png',width=600,height=350,units="px",bg = "transparent")
+
+
+s2020 <- swing2020 %>% group_by(state_id) %>% summarise(means = mean(accuracy_aapor_abs)) %>% ggplot(aes(x = state_id, y = means, fill = state_id)) +
+    geom_bar(stat = "identity", fill = "#999999", color = "black") +
+    theme_classic() +
+    labs(
+        x = "",
+        y = "Absolute error on poll margin",
+        title = paste(
+            "Absolute poll accuracy in swing states in 2020"
+        ) # + ylim(0, 15)
+    ) +
+    geom_text(aes(label=round(means, 2)), position=position_dodge(width=0.9), vjust=-0.25) +
+  scale_y_continuous(limits = c(0, 9)) 
+ # png('tables_figures_and_graphs/accuracy_swing2020.png',width=600,height=350,units="px",bg = "transparent")
+
+png(file="tables_figures_and_graphs/swingstates.png", width=900, height=400) 
+grid.arrange(s2016, s2020, nrow = 1, ncol = 2)
+dev.off()
+
+```
+## plots accuracy over time
+```{r plot time accuracy}
+# 2016
+na16 <- lm(accuracy_aapor_abs ~ grade_new + startdate2, data = final_2016) # remove NAs
+
+ggplot(na16, aes(y = accuracy_aapor_abs, x = startdate2)) +
+  geom_point(aes(colour = factor(grade_new)), alpha = 0.3) +
+  facet_wrap("grade_new", nrow = 3) +
+   geom_smooth(span = 0.5, colour = "black") +
+   scale_y_continuous("Absolute error on poll margin") +
+   ggtitle("Poll accuracy and pollster grade 2016") +
+   labs(x = "Start date of survey", color = "Pollster grade") + 
+   png('tables_figures_and_graphs/accuracy2016.png',width=600,height=450,units="px",bg = "transparent")
+
+# 2020
+na20 <- lm(accuracy_aapor_abs ~ fte_grade_new + start_date2, data = final_2020c) # remove NAs
+
+ggplot(na20, aes(y = accuracy_aapor_abs, x = start_date2)) +
+  geom_point(aes(colour = factor(fte_grade_new)), alpha = 0.3) +
+  facet_wrap("fte_grade_new", nrow = 3) +
+   geom_smooth(span = 0.5, colour = "black") +
+   scale_y_continuous("Absolute error on poll margin") +
+   ggtitle("Poll accuracy and pollster grade 2020") +
+   labs(x = "Start date of survey", color = "Pollster grade") + 
+   png('tables_figures_and_graphs/accuracy2020.png',width=600,height=450,units="px",bg = "transparent")
+
+# Plot with alternative recoding of FTE grade (not conservative)
+na20alt <- lm(accuracy_aapor_abs ~ fte_grade_newalt + start_date2, data = final_2020c) # remove NAs
+
+ggplot(na20alt, aes(y = accuracy_aapor_abs, x = start_date2)) +
+  geom_point(aes(colour = factor(fte_grade_newalt)), alpha = 0.3) +
+  facet_wrap("fte_grade_newalt", nrow = 3) +
+   geom_smooth(span = 0.5, colour = "black") +
+   scale_y_continuous("Absolute error on poll margin") +
+   ggtitle("Poll accuracy and pollster grade 2020 (alternative grade)") +
+   labs(x = "Start date of survey", color = "Pollster grade") + 
+   png('tables_figures_and_graphs/accuracy2020_altgrade.png',width=600,height=450, units="px",bg = "transparent")
+
+```
+
+# Regression 2016
+
+```{r regression 2016, warning = FALSE, message = FALSE}
+# Model 1
+m1 <- lm(accuracy_aapor_abs ~ `Live Caller With Cellphones` + Internet, data = final_2016) 
+#summary(m1)
+
+# Model 2
+m2 <- lm(accuracy_aapor_abs ~ `Live Caller With Cellphones` + Internet + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age`, data = final_2016) 
+#summary(m2)
+
+# Model 3
+m3 <- lm(accuracy_aapor_abs ~ `Live Caller With Cellphones` + Internet + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age` + `Weight by income` + `Weight by region/district` + `Weight by partisanship/party registration`+ grade_new + population, data = final_2016) 
+#summary(m3)
+
+# subset for time
+sub2016 <- final_2016[final_2016$startdate2 > as.Date("2016-09-30"),] # subset data to October and November
+
+# Model 4 (Subset time)
+m4 <- lm(accuracy_aapor_abs ~ `Live Caller With Cellphones` + Internet + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age` + `Weight by income` + `Weight by region/district` + `Weight by partisanship/party registration`+ grade_new + population, data = sub2016)
+#summary(m4) 
+
+# regression table
+stargazer(m1, m2, m3, m4, 
+          type = "html",
+          covariate.labels = c("Live Caller: Yes", "Internet: Yes", "Weight By Education", "Weight By Gender", "Weight By Race", "Weight By Age", "Weight By Income", "Weight By Region/District", "Weight By Partisanship", "Grade B", "Grade C", "Grade D", "Likely Voters", "Registered Voters"), 
+          header = F,
+          label = "tab:regression1", 
+          title = "2016 Election: Linear Regression",
+          keep.stat = c("n", "rsq", "adj.rsq"), 
+          no.space = T, # no space between lines
+          dep.var.caption = "", 
+          dep.var.labels = "Dependent variable: Absolute error on the poll margin",
+          out="tables_figures_and_graphs/reg2016.htm")
+
+```
+
+# Regression 2020
+
+```{r regression 2020, warning = FALSE, message = FALSE}
+# Model 5
+m5 <- lm(accuracy_aapor_abs ~ cellphones + meth_cat, data = final_2020c) # ref is mixed
+#summary(m5)
+
+# Model 6
+m6 <- lm(accuracy_aapor_abs ~ cellphones + meth_cat + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age`, data = final_2020c) 
+#summary(m6)
+
+# Model 7
+m7 <- lm(accuracy_aapor_abs ~ cellphones + meth_cat + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age` + `Weight by income` + `Weight by region/district` + `Weight by partisanship/party registration`+ final_2020c$`Weight by other` + fte_grade_new + population, data = final_2020c)
+# population a is ref category
+#summary(m7)
+
+# subset for time
+sub2020 <- final_2020c[final_2020c$start_date2 > as.Date("2020-09-30"),] # subset data to October and November
+
+# Model 8 (Subset time)
+m8 <- lm(accuracy_aapor_abs ~ cellphones + meth_cat + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age` + `Weight by income` + `Weight by region/district` + `Weight by partisanship/party registration`+ fte_grade_new + population, data = sub2020)
+#summary(m8) 
+
+# Model 9
+m9 <- lm(accuracy_aapor_abs ~ cellphones + meth_cat + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age` + `Weight by income` + `Weight by region/district` + `Weight by partisanship/party registration`+ final_2020c$`Weight by other` + fte_grade_new + population + cases_per100k, data = final_2020c) # covid model
+#summary(m9)
+
+# regression table
+stargazer(m5, m6, m7, m8, m9, 
+          type = "html",
+          covariate.labels = c("Cellphones: Yes", "Online", "Other", "Phone", "Weight by Education", "Weight by Gender", "Weight by Race", "Weight by Age", "Weight by Income", "Weight by Region/District", "Weight by Partisanship", "Weight by Other","Grade B", "Grade C", "Grade D", "Likely Voters", "Registered Voters", "Voters", "Covid cases/100k"), 
+          header = F, # To surpress the stargazer comment
+          label = "tab:regression2", # If you produce pdf output you can even cross-reference your table in your text.
+          title = "2020 Election: Linear Regression",
+          keep.stat = c("n", "rsq", "adj.rsq"), 
+          no.space = T, # no space between lines
+          dep.var.caption = "", 
+          dep.var.labels = "Dependent variable: Absolute error on the poll margin",
+          out="tables_figures_and_graphs/reg2020.htm")
+
+```
+
+```{r regression 2020 alt, warning = FALSE, message = FALSE}
+# Model 7 alt
+m7alt <- lm(accuracy_aapor_abs ~ cellphones + meth_cat + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age` + `Weight by income` + `Weight by region/district` + `Weight by partisanship/party registration`+ final_2020c$`Weight by other` + fte_grade_newalt + population, data = final_2020c)
+# population a is ref category
+#summary(m7alt)
+
+# Model 8 alt (Subset time)
+m8alt <- lm(accuracy_aapor_abs ~ cellphones + meth_cat + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age` + `Weight by income` + `Weight by region/district` + `Weight by partisanship/party registration`+ fte_grade_newalt + population, data = sub2020)
+#summary(m8alt) 
+
+# Model 9 alt
+m9alt <- lm(accuracy_aapor_abs ~ cellphones + meth_cat + `Weight by education` + `Weight by gender` + `Weight by race` + `Weight by age` + `Weight by income` + `Weight by region/district` + `Weight by partisanship/party registration`+ final_2020c$`Weight by other` + fte_grade_newalt + population + cases_per100k, data = final_2020c) # covid model
+#summary(m9alt)
+
+# regression table
+stargazer(m5, m6, m7alt, m8alt, m9alt,
+          type = "html",
+          covariate.labels = c("Cellphones: Yes", "Online", "Other", "Phone", "Weight by Education", "Weight by Gender", "Weight by Race", "Weight by Age", "Weight by Income", "Weight by Region/District", "Weight by Partisanship", "Weight by Other","Grade B", "Grade C", "Grade D", "Likely Voters", "Registered Voters", "Voters", "Covid cases/100k"),
+          header = F, # To surpress the stargazer comment
+          label = "tab:regression3", # If you produce pdf output you can even cross-reference your table in your text.
+          title = "2020 Election: Linear Regression (alternative grade)",
+          keep.stat = c("n", "rsq", "adj.rsq"), 
+          no.space = T, # no space between lines
+          dep.var.caption = "", 
+          dep.var.labels = "Dependent variable: Absolute error on the poll margin",
+          out="tables_figures_and_graphs/reg2020alt_appendix.htm")
+
+```
+
+## prepare over/underestimation plot
+```{r accuracy per candidate}
+# 2016
+final_2016$accuracy_16t <- final_2016$rawpoll_trump - final_2016$trump_new
+#summary(final_2016$accuracy_16t)
+
+final_2016$accuracy_16c <- final_2016$rawpoll_clinton - final_2016$clinton_new
+# summary(final_2016$accuracy_16c)
+
+# 2020
+final_2020c$accuracy_20t <- final_2020c$pct.x - final_2020c$trump_new
+# summary(final_2016$accuracy_16t)
+
+final_2020c$accuracy_20b <- final_2020c$pct.y - final_2020c$biden_new
+# summary(final_2016$accuracy_16c)
+
+```
+
+```{r over/underestimation plot}
+png(file="tables_figures_and_graphs/over_underestimation.png",
+width=600, height=350)
+
+par(mfrow = c(2, 2),
+    mar = c(2, 0, 0, 0) + 2)
+plot(
+  density(final_2020c$accuracy_20t, na.rm=T),
+  main =  "Trump 2020",
+  xlim = c(-35, 15),
+  xlab = "Signed margin of error")
+plot(
+  density(final_2020c$accuracy_20b, na.rm=T),
+  main = "Biden 2020",
+  xlim = c(-35, 15),
+  xlab = "Signed margin of error")
+plot(
+  density(final_2016$accuracy_16t, na.rm=T),
+  main =  "Trump 2016",
+  xlim = c(-35, 15),
+  xlab = "Signed margin of error")
+plot(
+  density(final_2016$accuracy_16c, na.rm=T),
+  main = "Clinton 2016",
+  xlim = c(-35, 15),
+  xlab = "Signed margin of error")
+
+dev.off()
+
+```
